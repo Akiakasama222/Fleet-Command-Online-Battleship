@@ -41,6 +41,22 @@ input{font:inherit;padding:8px 12px;border:2px solid var(--ink);border-radius:4p
 #plist li{display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--line)}
 #log{margin:16px 0 0;padding:0;list-style:none;font-size:.9rem;color:#41586b;max-height:8em;overflow:auto}
 .code{font:700 1.6rem monospace;letter-spacing:.2em;background:#fff;padding:4px 12px;border:2px solid var(--ink)}
+.nav{display:none}
+@media(max-width:700px){
+ main{padding:12px 10px 32px}
+ h1{font-size:1.6rem}
+ #boards{display:flex;flex-direction:column;gap:14px}
+ .nav{display:flex;order:1;align-items:center;justify-content:space-between;gap:8px}
+ .nav button{min-width:56px;min-height:48px;font-size:1.3rem;padding:4px 12px}
+ .navlab{flex:1;text-align:center;font:600 1rem Georgia,serif}
+ .bw{order:2}.bw.off{display:none}
+ .bw:not(.me) h2{display:none}
+ .bw .grid{max-width:none}
+ .bw.me{order:3;width:56%;margin:0 auto}
+ .bw.me h2{justify-content:center;font-size:.95rem}
+ #boards.setup .nav,#boards.setup .bw:not(.me){display:none}
+ #boards.setup .bw.me{width:100%}
+}
 </style>
 </head>
 <body>
@@ -101,7 +117,7 @@ const el=(t,c,x)=>{const e=document.createElement(t);if(c)e.className=c;if(x!=nu
 const blank=()=>Array.from({length:N},()=>Array(N).fill(""));
 const coord=(r,c)=>String.fromCharCode(65+c)+(r+1);
 let peer,conns={},hostConn=null,isHost=false,code="",me="",hostId="";
-let phase="lobby",mode="ffa",players=[],turn=null,over=null,cur=null;
+let phase="lobby",mode="ffa",players=[],turn=null,over=null,cur=null,viewId=null;
 let ships=[],sel=0,horiz=true,hover=null,myReady=false,marks={},sunkShips={};
 const P=id=>players.find(p=>p.id===id);
 const enemy=(s,t)=>s.id!==t.id&&(mode==="ffa"||s.team!==t.team);
@@ -166,9 +182,11 @@ function render(){
   if(phase==="room")renderRoom();
   if(phase==="lobby"||phase==="room")return;
   const my=P(me),canFire=phase==="battle"&&turn===me&&my&&my.alive;
-  const B=$("boards");B.innerHTML="";
+  const B=$("boards");B.innerHTML="";B.className=phase==="setup"?"setup":"";
+  const others=players.filter(p=>p.id!==me);
+  if(!others.find(p=>p.id===viewId)){const f=others.find(p=>p.alive&&my&&enemy(my,p))||others[0];viewId=f?f.id:null}
   players.forEach(p=>{
-    const w=el("div","bw"+(p.alive?"":" dead")+(p.id===turn?" cur":""));
+    const w=el("div","bw"+(p.alive?"":" dead")+(p.id===turn?" cur":"")+(p.id===me?" me":p.id===viewId?"":" off"));
     const h=el("h2","",p.id===me?"Your fleet":p.name);
     if(p.id!==me&&!p.alive)h.append(" (sunk)");
     h.append(tag(p));w.append(h);
@@ -176,6 +194,17 @@ function render(){
     drawBoard(g,p.id);w.append(g);
     if(p.id===me)B.prepend(w);else B.append(w);
   });
+  if(others.length){
+    const i=others.findIndex(p=>p.id===viewId),v=others[i],n=others.length;
+    const nav=el("div","nav"),pv=el("button","alt","◀"),nx=el("button","alt","▶");
+    pv.setAttribute("aria-label","Previous board");nx.setAttribute("aria-label","Next board");
+    pv.disabled=nx.disabled=n<2;
+    pv.onclick=()=>{viewId=others[(i+n-1)%n].id;render()};
+    nx.onclick=()=>{viewId=others[(i+1)%n].id;render()};
+    const ally=mode==="teams"&&my&&v.team===my.team;
+    nav.append(pv,el("span","navlab",v.name+(mode==="teams"?" – Team "+"AB"[v.team]+(ally?" (ally)":""):"")+(v.alive?"":" (sunk)")+(v.id===turn?" – aiming":"")+"  "+(i+1)+"/"+n),nx);
+    B.append(nav);
+  }
   $("tray").innerHTML="";
   FLEET.forEach((f,i)=>{
     const t=el("button","chip"+(i===sel?" sel":"")+(placed(i)?" done":""),f.w>1?`${f.n} (${f.w}×${f.len})`:`${f.n} (${f.len})`);
