@@ -41,6 +41,7 @@ input{font:inherit;padding:8px 12px;border:2px solid var(--ink);border-radius:4p
 #plist li{display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--line)}
 #log{margin:16px 0 0;padding:0;list-style:none;font-size:.9rem;color:#41586b;max-height:8em;overflow:auto}
 .code{font:700 1.6rem monospace;letter-spacing:.2em;background:#fff;padding:4px 12px;border:2px solid var(--ink)}
+#end{position:fixed;inset:0;background:#12263acc;display:grid;place-items:center;z-index:10;padding:16px}#end.hidden{display:none}#end .card{background:var(--paper);border:3px solid var(--ink);padding:24px 28px;max-width:420px;width:100%;text-align:center}#end h2{justify-content:center;font-size:1.9rem;margin-bottom:4px}
 .nav{display:none}
 @media(max-width:700px){
  main{padding:12px 10px 32px}
@@ -96,6 +97,7 @@ input{font:inherit;padding:8px 12px;border:2px solid var(--ink);border-radius:4p
   <div id="boards"></div>
   <div class="row"><button id="again" class="hidden">Back to lobby</button></div>
   <ul id="log"></ul>
+<div id="end" class="hidden" role="dialog" aria-modal="true" aria-labelledby="endTitle"><div class="card"><h2 id="endTitle"></h2><p id="endSub"></p><div class="row" style="justify-content:center"><button id="endLobby">Return to lobby</button><button id="endView" class="alt">View boards</button></div></div></div>
 </section>
 </main>
 
@@ -118,7 +120,7 @@ const el=(t,c,x)=>{const e=document.createElement(t);if(c)e.className=c;if(x!=nu
 const blank=()=>Array.from({length:N},()=>Array(N).fill(""));
 const coord=(r,c)=>String.fromCharCode(65+c)+(r+1);
 let peer,conns={},hostConn=null,isHost=false,code="",me="",hostId="";
-let phase="lobby",mode="ffa",players=[],turn=null,over=null,cur=null,viewId=null,lastHitBy=null;
+let phase="lobby",mode="ffa",players=[],turn=null,over=null,cur=null,viewId=null,lastHitBy=null,endHidden=false;
 let ships=[],sel=0,horiz=true,hover=null,myReady=false,marks={},sunkShips={};
 const P=id=>players.find(p=>p.id===id);
 const enemy=(s,t)=>s.id!==t.id&&(mode==="ffa"||s.team!==t.team);
@@ -180,6 +182,7 @@ function render(){
   $("lobby").classList.toggle("hidden",phase!=="lobby");
   $("room").classList.toggle("hidden",phase!=="room");
   $("game").classList.toggle("hidden",phase==="lobby"||phase==="room");
+  if(phase!=="over")$("end").classList.add("hidden");
   if(phase==="room")renderRoom();
   if(phase==="lobby"||phase==="room")return;
   const my=P(me),canFire=phase==="battle"&&turn===me&&my&&my.alive;
@@ -216,7 +219,7 @@ function render(){
   $("ready").disabled=ships.length<FLEET.length||myReady;
   $("ready").textContent=myReady?"Locked in":"Ready";
   $("setup").classList.toggle("hidden",phase!=="setup");
-  $("again").classList.toggle("hidden",!(phase==="over"&&isHost));
+  $("again").classList.toggle("hidden",phase!=="over");
   const s=$("status");let cls="",t="";
   if(phase==="setup")t=myReady?"Waiting for: "+players.filter(p=>!p.ready).map(p=>p.name).join(", "):"Place your ships, then press Ready.";
   else if(phase==="battle"){
@@ -227,6 +230,12 @@ function render(){
     const won=over.ids.includes(me);t=over.text+(won?" You win!":" Better luck next time.");cls=won?"turn":"lose";
   }
   s.textContent=t;s.className=cls;
+  if(phase==="over"){
+    const w=over.ids.includes(me);
+    $("endTitle").textContent=over.text;
+    $("endSub").textContent=over.ids.length?(w?"Victory! Your side sank every enemy fleet.":"Your fleet has been defeated."):"";
+    $("end").classList.toggle("hidden",endHidden);
+  }
 }
 function renderRoom(){
   const ul=$("plist");ul.innerHTML="";
@@ -250,7 +259,7 @@ const hostRoster=()=>bcast({t:"roster",players,mode});
 
 /* every client (and the host itself) applies broadcast messages here */
 function apply(m){
-  if(m.t==="roster"){players=m.players;mode=m.mode;phase="room";over=null;turn=null}
+  if(m.t==="roster"){players=m.players;mode=m.mode;phase="room";over=null;turn=null;endHidden=false}
   else if(m.t==="start"){
     players=m.players.map(p=>({...p,alive:true,ready:false}));mode=m.mode;marks={};sunkShips={};lastHitBy=null;
     players.forEach(p=>marks[p.id]=blank());
@@ -268,13 +277,15 @@ function apply(m){
     log(`${by.name} → ${to.name} ${coord(m.r,m.c)}: ${m.hit?(m.sunk?"sank a "+m.sunk.name+"!":"hit"):"miss"}${m.elim?" – fleet destroyed!":""}`);
   }
   else if(m.t==="left"){const p=P(m.id);if(p){p.alive=false;log(p.name+" left the game.")}}
-  else if(m.t==="over"){phase="over";over=m;turn=null}
+  else if(m.t==="over"){phase="over";over=m;turn=null;endHidden=false}
   render();
 }
 
 /* ---------- host-only logic ---------- */
 function hostHandle(m,from){
-  if(m.t==="team"){
+  if(m.t==="lobby"){
+    if(phase==="over"){players=players.filter(p=>p.id===me||conns[p.id]);players.forEach(p=>{p.alive=true;p.ready=false});hostRoster()}
+  }else if(m.t==="team"){
     const p=P(from);if(phase==="room"&&p){p.team^=1;hostRoster()}
   }else if(m.t==="ready"){
     bcast({t:"ready",id:from});
@@ -308,8 +319,9 @@ function checkEnd(){
 function onIncoming(m){
   const s=occupied(m.r,m.c),g=marks[me];
   g[m.r][m.c]=s?"h":"m";
-  const sunk=s&&s.cells.every(([a,b])=>g[a][b]==="h")?{name:s.name,cells:s.cells}:null;
-  const elim=ships.every(x=>x.cells.every(([a,b])=>g[a][b]==="h"));
+  const isHit=v=>v==="h"||v==="s";
+  const sunk=s&&s.cells.every(([a,b])=>isHit(g[a][b]))?{name:s.name,cells:s.cells}:null;
+  const elim=ships.every(x=>x.cells.every(([a,b])=>isHit(g[a][b])));
   toHost({t:"result",by:m.from,r:m.r,c:m.c,hit:!!s,sunk,elim});
 }
 function fire(target,r,c){
@@ -388,7 +400,8 @@ $("rotate").onclick=()=>{horiz=!horiz;render()};
 $("random").onclick=randomize;
 $("reset").onclick=()=>{ships=[];sel=0;render()};
 $("ready").onclick=()=>{myReady=true;toHost({t:"ready"});render()};
-$("again").onclick=()=>{players.forEach(p=>{p.alive=true;p.ready=false});hostRoster()};
+$("again").onclick=$("endLobby").onclick=()=>toHost({t:"lobby"});
+$("endView").onclick=()=>{endHidden=true;render()};
 document.addEventListener("keydown",e=>{if(e.key.toLowerCase()==="r"&&phase==="setup"&&e.target.tagName!=="INPUT"){horiz=!horiz;render()}});
 const room=new URLSearchParams(location.search).get("room");
 if(room){$("joinCode").value=room}
