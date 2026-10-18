@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fleet Command – Online Battleship</title>
+<style>
+:root{--paper:#dfe9e4;--ink:#12263a;--sea:#c3d6d0;--line:#8fa9a6;--hit:#d23b2a;--ship:#1d3b5a;--miss:#6f8a8a;--ok:#2f7d5b;--bad:#d23b2a}
+*{box-sizing:border-box}
+body{margin:0;background:var(--paper);color:var(--ink);font:16px/1.5 system-ui,-apple-system,Segoe UI,sans-serif}
+main{max-width:980px;margin:0 auto;padding:20px 16px 48px}
+h1{font:700 2rem/1.1 Georgia,'Times New Roman',serif;margin:8px 0 4px;letter-spacing:.01em}
+h2{font:600 1.05rem Georgia,serif;margin:0 0 8px}
+.sub{margin:0 0 20px;color:#41586b}
+button{font:inherit;border:2px solid var(--ink);background:var(--ink);color:#fff;padding:8px 16px;border-radius:4px;cursor:pointer}
+button.alt{background:transparent;color:var(--ink)}
+button:disabled{opacity:.4;cursor:not-allowed}
+button:focus-visible,.cell:focus-visible,input:focus-visible{outline:3px solid #e8a317;outline-offset:2px}
+input{font:inherit;padding:8px 12px;border:2px solid var(--ink);border-radius:4px;background:#fff;width:9em;text-transform:uppercase}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin:12px 0}
+.hidden{display:none!important}
+#status{font:600 1.15rem Georgia,serif;padding:10px 14px;border-left:6px solid var(--ink);background:#fff8;margin:12px 0}
+#status.turn{border-color:var(--ok)}#status.wait{border-color:var(--miss)}#status.lose{border-color:var(--bad)}
+.boards{display:grid;grid-template-columns:1fr 1fr;gap:24px}
+@media(max-width:760px){.boards{grid-template-columns:1fr}}
+.grid{display:grid;grid-template-columns:repeat(10,1fr);gap:2px;background:var(--line);border:2px solid var(--ink);aspect-ratio:1;max-width:440px}
+.cell{background:var(--sea);border:0;padding:0;border-radius:0;position:relative;color:inherit;min-width:0}
+.cell.ship{background:var(--ship)}
+.cell.pok{background:#6fb593}.cell.pbad{background:#e08a80}
+.cell.miss::after{content:"";position:absolute;inset:38%;border-radius:50%;background:var(--miss)}
+.cell.hit{background:var(--hit)}
+.cell.hit::after{content:"✕";position:absolute;inset:0;display:grid;place-items:center;color:#fff;font-weight:700}
+.cell.sunk{background:#5a1a14}.cell.sunk::after{content:"✕";position:absolute;inset:0;display:grid;place-items:center;color:#fff;font-weight:700}
+.fire .cell:not(.hit):not(.miss):not(.sunk):hover{background:#f2c14e;cursor:crosshair}
+.tray{display:flex;gap:8px;flex-wrap:wrap}
+.chip{border:2px solid var(--ink);background:transparent;color:var(--ink);padding:4px 10px;font-size:.9rem}
+.chip.sel{background:var(--ink);color:#fff}.chip.done{border-style:dashed;opacity:.65}
+#log{margin:16px 0 0;padding:0;list-style:none;font-size:.9rem;color:#41586b;max-height:7.5em;overflow:auto}
+.code{font:700 1.6rem monospace;letter-spacing:.2em;background:#fff;padding:4px 12px;border:2px solid var(--ink)}
+</style>
+</head>
+<body>
+<main>
+<h1>Fleet Command</h1>
+<p class="sub">Hide your fleet, then hunt your opponent's. Two players, any browser.</p>
+
+<section id="lobby">
+  <div class="row"><button id="create">Create game</button></div>
+  <div class="row"><input id="joinCode" maxlength="5" placeholder="Code" aria-label="Game code"><button id="join" class="alt">Join game</button></div>
+  <p id="lobbyMsg" role="status"></p>
+</section>
+
+<section id="game" class="hidden">
+  <div id="invite" class="hidden">
+    <p>Share this code or link with your opponent:</p>
+    <div class="row"><span class="code" id="codeOut"></span><button id="copy" class="alt">Copy link</button></div>
+  </div>
+  <div id="status" role="status"></div>
+  <div id="setup" class="hidden">
+    <div class="tray" id="tray"></div>
+    <div class="row">
+      <button id="rotate" class="alt">Rotate (R)</button>
+      <button id="random" class="alt">Random layout</button>
+      <button id="reset" class="alt">Clear</button>
+      <button id="ready" disabled>Ready</button>
+    </div>
+  </div>
+  <div class="boards">
+    <div><h2>Your fleet</h2><div class="grid" id="mine" aria-label="Your board"></div></div>
+    <div><h2>Enemy waters</h2><div class="grid" id="theirs" aria-label="Enemy board"></div></div>
+  </div>
+  <div class="row"><button id="rematch" class="hidden">Play again</button></div>
+  <ul id="log"></ul>
+</section>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script>
+const N=10;
+const FLEET=[["Carrier",5],["Battleship",4],["Cruiser",3],["Submarine",3],["Destroyer",2]];
+const $=id=>document.getElementById(id);
+const blank=()=>Array.from({length:N},()=>Array(N).fill(""));
+let peer,conn,isHost=false,code="";
+let phase="lobby",turn=null,ships=[],sel=0,horiz=true,hover=null;
+let myReady=false,oppReady=false,rematchMe=false,rematchOpp=false,gameOver=false,won=false;
+let incoming=blank(),outgoing=blank();
+
+/* ---------- ship helpers ---------- */
+const cellsFor=(r,c,len,h)=>Array.from({length:len},(_,i)=>h?[r,c+i]:[r+i,c]);
+const occupied=(r,c)=>ships.find(s=>s.cells.some(([a,b])=>a===r&&b===c));
+const valid=cs=>cs.every(([r,c])=>r>=0&&c>=0&&r<N&&c<N&&!occupied(r,c));
+const placed=i=>ships.find(s=>s.i===i);
+const nextFree=()=>FLEET.findIndex((_,i)=>!placed(i));
+function place(r,c){
+  if(sel<0)return;
+  const cs=cellsFor(r,c,FLEET[sel][1],horiz);
+  if(!valid(cs))return;
+  ships.push({i:sel,name:FLEET[sel][0],cells:cs});
+  sel=nextFree();render();
+}
+function randomize(){
+  ships=[];
+  FLEET.forEach(([n,l],i)=>{
+    for(let t=0;t<500;t++){
+      const h=Math.random()<.5,r=Math.floor(Math.random()*N),c=Math.floor(Math.random()*N),cs=cellsFor(r,c,l,h);
+      if(valid(cs)){ships.push({i,name:n,cells:cs});break}
+    }
+  });
+  sel=nextFree();render();
+}
+
+/* ---------- rendering ---------- */
+function render(){
+  const mine=$("mine"),theirs=$("theirs");
+  const prev=(hover&&phase==="setup"&&sel>=0)?cellsFor(hover[0],hover[1],FLEET[sel][1],horiz):[];
+  const prevOk=valid(prev);
+  mine.innerHTML="";theirs.innerHTML="";
+  for(let r=0;r<N;r++)for(let c=0;c<N;c++){
+    const b=document.createElement("button");b.className="cell";
+    b.setAttribute("aria-label",`${String.fromCharCode(65+c)}${r+1}`);
+    if(occupied(r,c))b.classList.add("ship");
+    if(incoming[r][c]==="h")b.classList.add("hit");
+    if(incoming[r][c]==="m")b.classList.add("miss");
+    if(prev.some(([a,d])=>a===r&&d===c))b.classList.add(prevOk?"pok":"pbad");
+    b.onmouseenter=()=>{if(phase==="setup"){hover=[r,c];render()}};
+    b.onclick=()=>{if(phase==="setup"&&!myReady)place(r,c)};
+    mine.appendChild(b);
+    const e=document.createElement("button");e.className="cell";
+    const m=outgoing[r][c];
+    if(m==="h")e.classList.add("hit");if(m==="m")e.classList.add("miss");if(m==="s")e.classList.add("sunk");
+    e.setAttribute("aria-label",`Fire at ${String.fromCharCode(65+c)}${r+1}`);
+    e.onclick=()=>fire(r,c);
+    theirs.appendChild(e);
+  }
+  theirs.classList.toggle("fire",phase==="battle"&&turn==="me");
+  $("tray").innerHTML="";
+  FLEET.forEach(([n,l],i)=>{
+    const t=document.createElement("button");
+    t.className="chip"+(i===sel?" sel":"")+(placed(i)?" done":"");
+    t.textContent=`${n} (${l})`;
+    t.onclick=()=>{ships=ships.filter(s=>s.i!==i);sel=i;render()};
+    $("tray").appendChild(t);
+  });
+  $("ready").disabled=ships.length<FLEET.length||myReady;
+  $("ready").textContent=myReady?"Waiting for opponent…":"Ready";
+  $("setup").classList.toggle("hidden",phase!=="setup");
+  $("rematch").classList.toggle("hidden",!gameOver);
+  $("rematch").disabled=rematchMe;
+  const s=$("status");let cls="";
+  if(phase==="connecting")s.textContent="Waiting for your opponent to join…";
+  else if(phase==="setup")s.textContent=myReady?"Fleet locked in. Waiting for your opponent…":"Place your ships, then press Ready.";
+  else if(phase==="battle"){s.textContent=turn==="me"?"Your turn. Pick a square in enemy waters.":"Opponent is aiming…";cls=turn==="me"?"turn":"wait"}
+  else if(gameOver){s.textContent=won?"Victory! You sank the entire enemy fleet.":"Defeat. Your fleet is lost.";cls=won?"turn":"lose"}
+  s.className=cls;
+}
+const log=t=>{const li=document.createElement("li");li.textContent=t;$("log").prepend(li)};
+const coord=(r,c)=>String.fromCharCode(65+c)+(r+1);
+
+/* ---------- game actions ---------- */
+function fire(r,c){
+  if(phase!=="battle"||turn!=="me"||outgoing[r][c])return;
+  turn="wait";send({t:"fire",r,c});render();
+}
+function receiveFire(r,c){
+  const s=occupied(r,c);
+  incoming[r][c]=s?"h":"m";
+  let sunk=null;
+  if(s&&s.cells.every(([a,b])=>incoming[a][b]==="h"))sunk={name:s.name,cells:s.cells};
+  const over=ships.every(x=>x.cells.every(([a,b])=>incoming[a][b]==="h"));
+  send({t:"result",r,c,hit:!!s,sunk,over});
+  log(`Enemy fired at ${coord(r,c)}: ${s?(sunk?`they sank your ${sunk.name}!`:"hit!"):"miss"}`);
+  if(over){phase="battle";gameOver=true;won=false;turn=null}else turn="me";
+  render();
+}
+function receiveResult(m){
+  outgoing[m.r][m.c]=m.hit?"h":"m";
+  if(m.sunk)m.sunk.cells.forEach(([a,b])=>outgoing[a][b]="s");
+  log(`You fired at ${coord(m.r,m.c)}: ${m.hit?(m.sunk?`you sank their ${m.sunk.name}!`:"hit!"):"miss"}`);
+  if(m.over){gameOver=true;won=true;turn=null}else turn="them";
+  render();
+}
+function maybeStart(){
+  if(myReady&&oppReady){phase="battle";turn=isHost?"me":"them";log("Battle begins!");render()}
+}
+function resetGame(){
+  ships=[];sel=0;horiz=true;hover=null;myReady=oppReady=rematchMe=rematchOpp=gameOver=won=false;
+  incoming=blank();outgoing=blank();turn=null;phase="setup";$("log").innerHTML="";render();
+}
+
+/* ---------- networking (PeerJS / WebRTC, no server of your own) ---------- */
+const send=o=>{if(conn&&conn.open)conn.send(o)};
+function wire(c){
+  conn=c;
+  c.on("open",()=>{$("invite").classList.add("hidden");resetGame()});
+  c.on("data",m=>{
+    if(m.t==="ready"){oppReady=true;maybeStart()}
+    else if(m.t==="fire")receiveFire(m.r,m.c);
+    else if(m.t==="result")receiveResult(m);
+    else if(m.t==="rematch"){rematchOpp=true;if(rematchMe){resetGame()}else log("Opponent wants a rematch.")}
+  });
+  c.on("close",()=>{$("status").textContent="Your opponent disconnected. Refresh to start a new game.";$("status").className="lose"});
+}
+function showGame(){$("lobby").classList.add("hidden");$("game").classList.remove("hidden")}
+function create(){
+  isHost=true;code=Math.random().toString(36).slice(2,7).toUpperCase();
+  $("lobbyMsg").textContent="Creating game…";
+  peer=new Peer("fleetcmd-"+code);
+  peer.on("open",()=>{
+    showGame();phase="connecting";
+    $("invite").classList.remove("hidden");$("codeOut").textContent=code;render();
+  });
+  peer.on("connection",wire);
+  peer.on("error",e=>{
+    if(e.type==="unavailable-id"){peer.destroy();create()}
+    else $("lobbyMsg").textContent="Connection problem: "+e.type+". Refresh and try again."
+  });
+}
+function join(c){
+  code=c.toUpperCase().trim();if(code.length!==5){$("lobbyMsg").textContent="Enter the 5-character code.";return}
+  $("lobbyMsg").textContent="Joining…";
+  peer=new Peer();
+  peer.on("open",()=>{
+    const cn=peer.connect("fleetcmd-"+code,{reliable:true});
+    wire(cn);showGame();phase="connecting";render();
+  });
+  peer.on("error",e=>{
+    $("lobbyMsg").textContent=e.type==="peer-unavailable"?"No game found with that code.":"Connection problem: "+e.type;
+    $("lobby").classList.remove("hidden");$("game").classList.add("hidden");
+  });
+}
+
+/* ---------- wiring ---------- */
+$("create").onclick=create;
+$("join").onclick=()=>join($("joinCode").value);
+$("copy").onclick=()=>{navigator.clipboard.writeText(location.origin+location.pathname+"?room="+code);$("copy").textContent="Copied"};
+$("rotate").onclick=()=>{horiz=!horiz;render()};
+$("random").onclick=randomize;
+$("reset").onclick=()=>{ships=[];sel=0;render()};
+$("ready").onclick=()=>{myReady=true;send({t:"ready"});maybeStart();render()};
+$("rematch").onclick=()=>{rematchMe=true;send({t:"rematch"});if(rematchOpp)resetGame();else{log("Rematch requested.");render()}};
+$("mine").onmouseleave=()=>{hover=null;render()};
+document.addEventListener("keydown",e=>{if(e.key.toLowerCase()==="r"&&phase==="setup"){horiz=!horiz;render()}});
+const room=new URLSearchParams(location.search).get("room");
+if(room){$("joinCode").value=room;join(room)}
+render();
+</script>
+</body>
+</html>
