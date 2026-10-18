@@ -101,7 +101,7 @@ const el=(t,c,x)=>{const e=document.createElement(t);if(c)e.className=c;if(x!=nu
 const blank=()=>Array.from({length:N},()=>Array(N).fill(""));
 const coord=(r,c)=>String.fromCharCode(65+c)+(r+1);
 let peer,conns={},hostConn=null,isHost=false,code="",me="",hostId="";
-let phase="lobby",mode="ffa",players=[],turn=null,over=null;
+let phase="lobby",mode="ffa",players=[],turn=null,over=null,cur=null;
 let ships=[],sel=0,horiz=true,hover=null,myReady=false,marks={},sunkShips={};
 const P=id=>players.find(p=>p.id===id);
 const enemy=(s,t)=>s.id!==t.id&&(mode==="ffa"||s.team!==t.team);
@@ -249,7 +249,7 @@ function hostHandle(m,from){
     if(players.every(p=>p.ready)){bcast({t:"begin"});nextTurn(true)}
   }else if(m.t==="fire"){
     const s=P(from),t=P(m.to);
-    if(phase!=="battle"||turn!==from||!s||!t||!s.alive||!t.alive||!enemy(s,t))return;
+    if(phase!=="battle"||cur!==from||!s||!t||!s.alive||!t.alive||!enemy(s,t))return;
     const q={t:"incoming",from,r:m.r,c:m.c};
     if(m.to===me)onIncoming(q);else conns[m.to]&&conns[m.to].send(q);
   }else if(m.t==="result"){
@@ -257,10 +257,10 @@ function hostHandle(m,from){
   }
 }
 function nextTurn(first){
-  const i=first?-1:players.findIndex(p=>p.id===turn);
+  const i=first?-1:players.findIndex(p=>p.id===cur);
   for(let k=1;k<=players.length;k++){
     const p=players[(i+k)%players.length];
-    if(p.alive){bcast({t:"turn",id:p.id});return}
+    if(p.alive){cur=p.id;bcast({t:"turn",id:p.id});return}
   }
 }
 function checkEnd(){
@@ -313,7 +313,7 @@ function create(){
       delete conns[c.peer];
       const p=P(c.peer);if(!p)return;
       if(phase==="room"){players=players.filter(x=>x!==p);hostRoster()}
-      else if(phase!=="over"){bcast({t:"left",id:p.id});if(!checkEnd()&&turn===p.id)nextTurn()}
+      else if(phase!=="over"){bcast({t:"left",id:p.id});if(!checkEnd()&&cur===p.id)nextTurn()}
     });
   });
   peer.on("error",e=>{
