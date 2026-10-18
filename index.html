@@ -76,6 +76,7 @@ input{font:inherit;padding:8px 12px;border:2px solid var(--ink);border-radius:4p
   <p>Share this code or link with your players:</p>
   <div class="row"><span class="code" id="codeOut"></span><button id="copy" class="alt">Copy link</button></div>
   <div class="row"><label>Mode <select id="mode"><option value="ffa">Free for all</option><option value="teams">Team battle</option></select></label></div>
+  <p id="teamHint" class="hidden">Tap your own team badge to switch teams.</p>
   <ul id="plist"></ul>
   <div class="row"><button id="start">Start game</button><span id="roomMsg" role="status"></span></div>
   <p id="hostWait" class="hidden">Waiting for the host to start the game…</p>
@@ -117,7 +118,7 @@ const el=(t,c,x)=>{const e=document.createElement(t);if(c)e.className=c;if(x!=nu
 const blank=()=>Array.from({length:N},()=>Array(N).fill(""));
 const coord=(r,c)=>String.fromCharCode(65+c)+(r+1);
 let peer,conns={},hostConn=null,isHost=false,code="",me="",hostId="";
-let phase="lobby",mode="ffa",players=[],turn=null,over=null,cur=null,viewId=null;
+let phase="lobby",mode="ffa",players=[],turn=null,over=null,cur=null,viewId=null,lastHitBy=null;
 let ships=[],sel=0,horiz=true,hover=null,myReady=false,marks={},sunkShips={};
 const P=id=>players.find(p=>p.id===id);
 const enemy=(s,t)=>s.id!==t.id&&(mode==="ffa"||s.team!==t.team);
@@ -220,7 +221,7 @@ function render(){
   if(phase==="setup")t=myReady?"Waiting for: "+players.filter(p=>!p.ready).map(p=>p.name).join(", "):"Place your ships, then press Ready.";
   else if(phase==="battle"){
     if(my&&!my.alive)t="Your fleet is sunk. You're spectating.";
-    else if(turn===me){t=mode==="teams"?"Your turn. Fire at an enemy team board.":"Your turn. Pick a board and fire.";cls="turn"}
+    else if(turn===me){t=lastHitBy===me?"Hit! Fire again.":mode==="teams"?"Your turn. Fire at an enemy team board.":"Your turn. Pick a board and fire.";cls="turn"}
     else{t=(P(turn)?P(turn).name:"…")+" is aiming…";cls="wait"}
   }else if(phase==="over"){
     const won=over.ids.includes(me);t=over.text+(won?" You win!":" Better luck next time.");cls=won?"turn":"lose";
@@ -232,10 +233,10 @@ function renderRoom(){
   players.forEach(p=>{
     const li=el("li");
     li.append(el("span","",p.name+(p.id===me?" (you)":"")+(p.id===hostId?" – host":"")));
-    if(mode==="teams"){const b=el("button","tag t"+p.team,"Team "+"AB"[p.team]);b.disabled=!isHost;b.onclick=()=>{p.team^=1;hostRoster()};li.append(b)}
+    if(mode==="teams"){const b=el("button","tag t"+p.team,"Team "+"AB"[p.team]);b.disabled=p.id!==me;b.setAttribute("aria-label",p.id===me?"Switch your team":p.name+" team");b.onclick=()=>toHost({t:"team"});li.append(b)}
     ul.append(li);
   });
-  $("mode").value=mode;$("mode").disabled=!isHost;
+  $("mode").value=mode;$("mode").disabled=!isHost;$("teamHint").classList.toggle("hidden",mode!=="teams");
   $("start").classList.toggle("hidden",!isHost);
   $("hostWait").classList.toggle("hidden",isHost);
   $("codeOut").textContent=code;
@@ -251,7 +252,7 @@ const hostRoster=()=>bcast({t:"roster",players,mode});
 function apply(m){
   if(m.t==="roster"){players=m.players;mode=m.mode;phase="room";over=null;turn=null}
   else if(m.t==="start"){
-    players=m.players.map(p=>({...p,alive:true,ready:false}));mode=m.mode;marks={};sunkShips={};
+    players=m.players.map(p=>({...p,alive:true,ready:false}));mode=m.mode;marks={};sunkShips={};lastHitBy=null;
     players.forEach(p=>marks[p.id]=blank());
     ships=[];sel=0;myReady=false;over=null;turn=null;phase="setup";$("log").innerHTML="";
   }
@@ -261,7 +262,7 @@ function apply(m){
   else if(m.t==="result"){
     const g=marks[m.to];g[m.r][m.c]=m.hit?"h":"m";
     if(m.sunk){m.sunk.cells.forEach(([a,b])=>g[a][b]="s");(sunkShips[m.to]=sunkShips[m.to]||[]).push(m.sunk)}
-    play(m.sunk?"boom":m.hit?"hit":"miss");
+    play(m.sunk?"boom":m.hit?"hit":"miss");lastHitBy=m.hit?m.by:null;
     if(m.elim)P(m.to).alive=false;
     const by=P(m.by),to=P(m.to);
     log(`${by.name} → ${to.name} ${coord(m.r,m.c)}: ${m.hit?(m.sunk?"sank a "+m.sunk.name+"!":"hit"):"miss"}${m.elim?" – fleet destroyed!":""}`);
@@ -273,7 +274,9 @@ function apply(m){
 
 /* ---------- host-only logic ---------- */
 function hostHandle(m,from){
-  if(m.t==="ready"){
+  if(m.t==="team"){
+    const p=P(from);if(phase==="room"&&p){p.team^=1;hostRoster()}
+  }else if(m.t==="ready"){
     bcast({t:"ready",id:from});
     if(players.every(p=>p.ready)){bcast({t:"begin"});nextTurn(true)}
   }else if(m.t==="fire"){
@@ -282,7 +285,8 @@ function hostHandle(m,from){
     const q={t:"incoming",from,r:m.r,c:m.c};
     if(m.to===me)onIncoming(q);else conns[m.to]&&conns[m.to].send(q);
   }else if(m.t==="result"){
-    m.to=from;bcast(m);if(!checkEnd())nextTurn();
+    m.to=from;bcast(m);
+    if(!checkEnd()){const sh=P(cur);if(m.hit&&sh&&sh.alive)bcast({t:"turn",id:cur});else nextTurn()}
   }
 }
 function nextTurn(first){
@@ -373,7 +377,7 @@ $("snd").onclick=()=>{sndOn=!sndOn;$("snd").textContent="Sound: "+(sndOn?"on":"o
 $("create").onclick=create;
 $("join").onclick=()=>join($("joinCode").value);
 $("copy").onclick=()=>{navigator.clipboard.writeText(location.origin+location.pathname+"?room="+code);$("copy").textContent="Copied"};
-$("mode").onchange=()=>{mode=$("mode").value;players.forEach((p,i)=>p.team=i%2);hostRoster()};
+$("mode").onchange=()=>{mode=$("mode").value;hostRoster()};
 $("start").onclick=()=>{
   const msg=$("roomMsg");
   if(players.length<2){msg.textContent="Need at least 2 players.";return}
